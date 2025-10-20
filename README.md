@@ -12,3 +12,11 @@ arguments:
 --reference: Reference face for main character
 --gfpgan: Use GFPGAN enhancement
 ex: python face-swap.py --source data/source.jpg --reference data/reference.jpg --input data/input.mp4 --output results/output.mp4 --gfpgan
+
+bug:
+from torchvision.transforms.functional_tensor import rgb_to_grayscale
+ModuleNotFoundError: No module named 'torchvision.transforms.functional_tensor'
+如果出現上面錯誤:
+from torchvision.transforms.functional_tensor import rgb_to_grayscale
+改成
+from torchvision.transforms.functional import rgb_to_grayscale

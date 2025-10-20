@@ -4,6 +4,7 @@ import numpy as np
 from insightface.app import FaceAnalysis
 from gfpgan import GFPGANer
 from numpy.linalg import norm
+import torch
 
 # ----------------------------
 # 初始化 InsightFace
@@ -42,9 +43,13 @@ def cosine_similarity(v1, v2):
     return np.dot(v1, v2) / (norm(v1) * norm(v2))
 
 # ----------------------------
-# 換臉函數（加主角辨識）
+# 換臉函數（加主角辨識 + GFPGAN 兼容新版）
 # ----------------------------
 def swap_faces(source_img, target_img, ref_embedding, gfpgan=None, alpha=0.7, threshold=0.3):
+    """
+    將 source_img 臉換到 target_img 中，並檢查是否符合主角 (ref_embedding)
+    支援 GFPGAN enhancement，並自動轉換為 numpy.ndarray
+    """
     source_faces = app.get(source_img)
     target_faces = app.get(target_img)
     if len(source_faces) == 0 or len(target_faces) == 0:
@@ -52,13 +57,13 @@ def swap_faces(source_img, target_img, ref_embedding, gfpgan=None, alpha=0.7, th
 
     source_face = source_faces[0]
     source_landmarks = source_face.landmark_2d_106
-
     output_img = target_img.copy()
+
     for t_face in target_faces:
         target_embedding = t_face.embedding
         sim = cosine_similarity(ref_embedding, target_embedding)
         if sim < threshold:
-            continue  # 不符合主角，就跳過
+            continue  # 不符合主角，跳過
 
         target_landmarks = t_face.landmark_2d_106
         hull_index = cv2.convexHull(target_landmarks.astype(np.int32), returnPoints=False)
@@ -68,16 +73,28 @@ def swap_faces(source_img, target_img, ref_embedding, gfpgan=None, alpha=0.7, th
         mask = np.zeros(target_img.shape[:2], dtype=np.uint8)
         cv2.fillConvexPoly(mask, cv2.convexHull(target_landmarks.astype(np.int32)), 255)
 
+        # GFPGAN 修復（新版 API + CPU/GPU 自動切換）
         if gfpgan is not None:
-            restored, _, _ = gfpgan.restore(warped_source, has_aligned=False, only_center_face=False)
-            warped_source = restored
+            restored_faces, restored_img, _ = gfpgan.enhance(
+                warped_source,
+                has_aligned=False,
+                only_center_face=False,
+                paste_back=True
+            )
 
+            # 確保 restored_img 是 numpy.ndarray
+            if not isinstance(restored_img, np.ndarray):
+                restored_img = np.array(restored_img)
+            warped_source = restored_img
+
+        # alpha 混合
         target_region = cv2.bitwise_and(output_img, output_img, mask=cv2.bitwise_not(mask))
         source_region = cv2.bitwise_and(warped_source, warped_source, mask=mask)
         blended = cv2.addWeighted(target_region, 1-alpha, source_region, alpha, 0)
         output_img[np.where(mask==255)] = blended[np.where(mask==255)]
 
     return output_img
+
 
 # ----------------------------
 # 影片處理
@@ -122,12 +139,26 @@ def main():
     gfpgan_model = None
     if args.gfpgan:
         print("Loading GFPGAN...")
+
+        # 自動偵測 GPU 是否可用且 Compute Capability >= 7.0
+        use_gpu = False
+        if torch.cuda.is_available():
+            device_name = torch.cuda.get_device_name(0)
+            major_cc, minor_cc = torch.cuda.get_device_capability(0)
+            print(f"Found GPU: {device_name} with Compute Capability {major_cc}.{minor_cc}")
+            if major_cc >= 7:
+                use_gpu = True
+            else:
+                print("GPU Compute Capability < 7.0, GFPGAN will use CPU instead.")
+        device_str = 'cuda' if use_gpu else 'cpu'
+
         gfpgan_model = GFPGANer(
             model_path='experiments/pretrained_models/GFPGANv1.3.pth',
             upscale=1,
-            arch='clean'
+            arch='clean',
+            device=device_str
         )
-        print("GFPGAN loaded.")
+        print(f"GFPGAN loaded on {device_str.upper()}.")
 
     process_video(source_img, args.input, args.output, ref_embedding, gfpgan=gfpgan_model, threshold=args.threshold)
 

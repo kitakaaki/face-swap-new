@@ -231,3 +231,5 @@ experiments/pretrained_models/*.pth
 *.mpeg
 *.mpg
 *.m4v
+
+gfpgan
