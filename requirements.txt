@@ -19,3 +19,4 @@ lmdb
 pyyaml
 scipy
 tqdm
+onnxruntime
