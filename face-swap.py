@@ -92,16 +92,21 @@ def swap_faces(source_img, target_img, ref_embedding, gfpgan=None, alpha=0.7, th
         mask = np.zeros(target_img.shape[:2], dtype=np.uint8)
         cv2.fillConvexPoly(mask, cv2.convexHull(target_landmarks.astype(np.int32)), 255)
 
-
+        # ---- 使用新版 GFPGAN API ----
         if gfpgan is not None:
             try:
-                restored, _, _ = gfpgan.restore(warped_source, has_aligned=False, only_center_face=False)
-                if restored is not None and restored.shape[0] > 0 and restored.shape[1] > 0:
-                    restored = cv2.resize(restored, (target_img.shape[1], target_img.shape[0]))
-                    warped_source = restored
+                restored_faces, restored_img, _ = gfpgan.enhance(
+                    warped_source,
+                    has_aligned=False,
+                    only_center_face=False,
+                    paste_back=True  # 將修復的人臉貼回原圖
+                )
+                if restored_img is not None and isinstance(restored_img, np.ndarray) and restored_img.size > 0:
+                    warped_source = restored_img
             except Exception as e:
                 print(f"GFPGAN enhance failed, fallback to original warp: {e}")
-                return None  # 返回 None 代表 GFPGAN 失敗，整段影片重新跑一次
+                # 失敗就使用原本 warp，不返回 None
+                pass
 
         target_region = cv2.bitwise_and(output_img, output_img, mask=cv2.bitwise_not(mask))
         source_region = cv2.bitwise_and(warped_source, warped_source, mask=mask)
@@ -116,10 +121,15 @@ def swap_faces(source_img, target_img, ref_embedding, gfpgan=None, alpha=0.7, th
 # ----------------------------
 def process_video(source_img, input_path, output_path, ref_embedding, gfpgan=None, threshold=0.3):
     cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video {input_path}")
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     frame_idx = 0
@@ -127,22 +137,29 @@ def process_video(source_img, input_path, output_path, ref_embedding, gfpgan=Non
         ret, frame = cap.read()
         if not ret:
             break
+
         swapped = swap_faces(source_img, frame, ref_embedding, gfpgan=gfpgan, threshold=threshold)
         if swapped is None:
             cap.release()
             out.release()
-            print("GFPGAN failed during video processing. Re-running without GFPGAN...")
-            return False  # 回傳 False 表示需要重新跑一次（CPU-only）
+            print("\nGFPGAN failed during video processing. Re-running without GFPGAN...")
+            return False
 
         out.write(swapped)
         frame_idx += 1
-        if frame_idx % 10 == 0:
-            print(f"Processed {frame_idx} frames...")
+
+        # 顯示百分比進度條
+        progress = (frame_idx / total_frames) * 100
+        bar_length = 30  # 進度條長度
+        filled_length = int(bar_length * frame_idx // total_frames)
+        bar = '█' * filled_length + '-' * (bar_length - filled_length)
+        print(f"\rProgress: |{bar}| {progress:6.2f}% ({frame_idx}/{total_frames})", end='')
 
     cap.release()
     out.release()
-    print("Video processing finished.")
+    print("\nVideo processing finished.")
     return True
+
 
 # ----------------------------
 # 主程式
